@@ -3,18 +3,28 @@ use strict;
 use Fcntl;
 use 5.010;
 
-BEGIN {
-    use Exporter ();
-    use vars qw($VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
-    $VERSION     = '0.01';
-    @ISA         = qw(Exporter);
-    #Give a hoot don't pollute, do not export more than needed by default
-    @EXPORT      = qw();
-    @EXPORT_OK   = qw();
-    %EXPORT_TAGS = ();
-}
-
 package ELF::File;
+
+use Exporter ();
+use vars qw($VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
+$VERSION     = '0.001';
+@ISA         = qw(Exporter);
+@EXPORT      = qw();
+@EXPORT_OK = qw(
+    $addrWidth
+    %p_type
+    %p_typeByName
+    %sh_type
+    %sh_typeByName
+    %sh_flags
+    %sh_flagsByName
+    %EI_OSABI
+    %e_type
+    %e_typeEng
+    %e_typeByName
+    %e_machine
+);
+%EXPORT_TAGS = ();
 
 use Config;
 
@@ -191,13 +201,28 @@ sub _ReadEntry {
     $self->{p_align} = $elf->{getPtr}();
 }
 
-sub FileSize {
+sub PhysAddress {
+    my ($self) = @_;
+
+    return $self->{p_paddr};
+}
+
+sub VirtAddress {
+    my ($self) = @_;
+
+    return $self->{p_vaddr};
+}
+
+sub Size {
     my ($self) = @_;
 
     return $self->{p_filesz};
 }
 
-sub uncoveredSub {
+sub Type {
+    my ($self) = @_;
+
+    return $self->{p_type};
 }
 
 
@@ -269,31 +294,43 @@ sub GetBlockIter {
 
     $params{start} //= 0;
     $params{length} //= $self->{p_filesz};
-    $params{size} //= 0x4000; # 16kiB
+    $params{blksize} //= 0x4000; # 16kiB
 
     die "GetBlockIter length parameter must be >= 0" if $params{length} < 0;
-    die "GetBlockIter start parameter must be >= 0" if $params{start} < 0;
-    die "GetBlockIter blksize parameter must be >= 0" if $params{blksize} < 0;
+    die "GetBlockIter blksize parameter must be > 0" if $params{blksize} <= 0;
 
-    my $segmentIndex = 0;
-    my $currOffset = $self->{p_offset} + $params{start};
-    my $endOffset = $currOffset + $params{length};
+    my $imgStartPos = $self->{p_offset};
+    my $imgEndPos = $self->{p_offset} + $self->{p_filesz};
+    my $nextBlkPos = ($params{start} < 0 ? $imgEndPos : $imgStartPos) + $params{start};
+    my $endBlkPos;
+
+    $nextBlkPos = $imgStartPos if $nextBlkPos < $imgStartPos;
+    $nextBlkPos = $imgEndPos if $nextBlkPos > $imgEndPos;
+    $endBlkPos = $nextBlkPos + $params{length};
+    $endBlkPos = $imgEndPos if $endBlkPos > $imgEndPos;
+
+    my $blkPos;
     my $elfFile = $self->{elf}{elfHandle};
+    my $blockSize = $params{blksize};
 
-    $currOffset += $params{start} if $params{start};
-    $currOffset += $params{length};
     $params{blksize} = $maxBlockSize if $params{blksize} > $maxBlockSize;
 
     return sub {
-        return undef if $currOffset >= $endOffset;
+        my ($param) = @_;
 
-        my $blockSize = $params{size};
-        my $remaining = $elfFile - $currOffset;
+        $param //= '';
+        return $nextBlkPos - $imgStartPos if $param eq 'nextpos';
+        return $blkPos - $imgStartPos if $param eq 'pos';
+        return $blockSize if $param eq 'blksize';
+        return undef if $nextBlkPos >= $endBlkPos;
+
+        my $remaining = $endBlkPos - $nextBlkPos;
 
         $blockSize = $remaining if $blockSize > $remaining;
-        seek $elfFile, $currOffset, Fcntl::SEEK_SET;
-        read $elfFile, my $data, $self->{p_filesz};
-        $currOffset += $blockSize;
+        $blkPos = $nextBlkPos;
+        $nextBlkPos += $blockSize;
+        seek $elfFile, $blkPos, Fcntl::SEEK_SET;
+        read $elfFile, my ($data), $blockSize;
         return $data;
     }
 }
@@ -485,24 +522,6 @@ sub _ReadEntries {
 
 
 package ELF::File;
-
-use Exporter 'import';
-
-our @ISA = qw(Exporter);
-our @EXPORT_OK = (
-    '$addrWidth',
-    '%p_type',
-    '%p_typeByName',
-    '%sh_type',
-    '%sh_typeByName',
-    '%sh_flags',
-    '%sh_flagsByName',
-    '%EI_OSABI',
-    '%e_type',
-    '%e_typeEng',
-    '%e_typeByName',
-    '%e_machine',
-);
 
 sub new {
     my ($class, %params) = @_;
@@ -741,16 +760,16 @@ contents.
 Return a section iterator that can be used as:
 
     my $nextSection = $elfFile->GetSectionIter();
-    
+
     while (my $section = $nextSection->()) {
     }
-    
+
 =item C<GetSegmentIter()>
 
 Return a segment iterator that can be used as:
 
     my $nextSegment = $elfFile->GetSegmentIter();
-    
+
     while (my $Segment = $nextSegment->()) {
     }
 
@@ -844,4 +863,3 @@ gives a good overview of the ELF file format and has useful links to further
 documentation.
 
 =cut
-
